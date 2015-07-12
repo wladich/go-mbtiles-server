@@ -7,9 +7,12 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -17,18 +20,35 @@ const (
 )
 
 type Layer struct {
-	conn     *sql.DB
-	tileStmt *sql.Stmt
+	conn           *sql.DB
+	tileStmt       *sql.Stmt
+	activeRequests sync.WaitGroup
+	mtime          time.Time
+	size           int64
 }
 
 func newLayer(filename string) (layer *Layer, err error) {
 	layer = new(Layer)
 	layer.conn, err = sql.Open("sqlite3", filename)
 	if err != nil {
-		return nil, err
+		layer.conn = nil
+		return
 	}
 	layer.tileStmt, err = layer.conn.Prepare("SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?")
-	return layer, err
+	if err != nil {
+		layer.conn.Close()
+		layer.conn = nil
+		layer.tileStmt = nil
+		return
+	}
+	layer.activeRequests.Add(1)
+	go func() {
+		layer.activeRequests.Wait()
+		layer.tileStmt.Close()
+		layer.conn.Close()
+		log.Printf("Layer %s disposed", filename)
+	}()
+	return
 }
 
 func (layer *Layer) tile(x, y, z int) ([]byte, error) {
@@ -49,21 +69,52 @@ func (layer *Layer) tile(x, y, z int) ([]byte, error) {
 }
 
 var layers = make(map[string]*Layer)
+var startingRequests sync.RWMutex
 
-func loadLayers() {
-	var err error
-	mbtiles, _ := filepath.Glob(filepath.Join(dataDir, "*.mbtiles"))
-	log.Printf("Found %d mbtiles files", len(mbtiles))
-	for _, filename := range mbtiles {
-		name := filepath.Base(filename)
-		name = strings.TrimSuffix(name, ".mbtiles")
-		layers[name], err = newLayer(filename)
-		if err != nil {
-			log.Printf("Error opening mbtiles file \"%s\": %s", filename, err)
-		} else {
-			log.Printf("Loaded file \"%s\" as \"%s\"", filename, name)
+func updateLayers() {
+	for {
+		files, _ := filepath.Glob(filepath.Join(dataDir, "*.mbtiles"))
+		seenLayers := make(map[string]bool)
+		for _, path := range files {
+			fi, err := os.Stat(path)
+			if err != nil || fi.IsDir() {
+				continue
+			}
+			mtime, size := fi.ModTime(), fi.Size()
+			name := filepath.Base(path)
+			name = strings.TrimSuffix(name, ".mbtiles")
+			seenLayers[name] = true
+			oldLayer, layerExists := layers[name]
+			if !layerExists || oldLayer.mtime != mtime || oldLayer.size != size {
+				layer, err := newLayer(path)
+				layer.mtime = mtime
+				layer.size = size
+				if err != nil {
+					log.Printf("Error opening mbtiles file \"%s\": %s", path, err)
+				}
+				layers[name] = layer
+				if layerExists && oldLayer != nil {
+					startingRequests.Lock()
+					oldLayer.activeRequests.Add(-1)
+					startingRequests.Unlock()
+					log.Printf("Updated file \"%s\" as \"%s\"", path, name)
+				} else {
+					log.Printf("Loaded file \"%s\" as \"%s\"", path, name)
+				}
+			}
 		}
+		for name, layer := range layers {
+			if _, ok := seenLayers[name]; !ok {
+				startingRequests.Lock()
+				delete(layers, name)
+				layer.activeRequests.Add(-1)
+				startingRequests.Unlock()
+				log.Printf("Layer \"%s\" removed", name)
+			}
+		}
+		time.Sleep(time.Second)
 	}
+
 }
 
 func tileResponse(resp http.ResponseWriter, req *http.Request) {
@@ -73,9 +124,21 @@ func tileResponse(resp http.ResponseWriter, req *http.Request) {
 		http.NotFound(resp, req)
 		return
 	}
+	startingRequests.RLock()
 	layer, ok := layers[urlFields[1]]
 	if !ok {
+		startingRequests.RUnlock()
 		http.NotFound(resp, req)
+		return
+	} else {
+		layer.activeRequests.Add(1)
+		defer func() {
+			layer.activeRequests.Add(-1)
+		}()
+		startingRequests.RUnlock()
+	}
+	if layer.tileStmt == nil {
+		http.Error(resp, "layer invalid", 500)
 		return
 	}
 	z, err := strconv.Atoi(urlFields[2])
@@ -109,8 +172,19 @@ func tileResponse(resp http.ResponseWriter, req *http.Request) {
 	}
 }
 
+const (
+	FileNew     = 0
+	FileChanged = 1
+	FileDeleted = 2
+)
+
+type FileEvent struct {
+	path      string
+	operation int
+}
+
 func main() {
-	loadLayers()
+	go updateLayers()
 	http.HandleFunc("/", tileResponse)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 
