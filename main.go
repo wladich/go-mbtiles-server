@@ -1,4 +1,3 @@
-// go-mbtiles-server project main.go
 package main
 
 import (
@@ -17,6 +16,49 @@ import (
 
 const (
 	dataDir = "/home/w/projects/mbtiles_layers/local_display"
+	html    = `
+<!DOCTYPE html>
+<html>
+    <header>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        <link rel="stylesheet" href="http://cdn.leafletjs.com/leaflet-0.7/leaflet.css" />
+        <script src="http://cdn.leafletjs.com/leaflet-0.7/leaflet.js"></script>
+        <script src="https://rawgithub.com/mlevans/leaflet-hash/master/leaflet-hash.js"></script>
+        <style>
+            body, html, #map {
+             height: 100%%;
+            }
+        </style>
+
+        <script>
+            var layers = [%s];
+
+            function setUpMap(){
+                 map = new L.Map('map', {fadeAnimation: false});
+                 baseMaps = {};
+                 for (i=0; i < layers.length; i++) {
+                    name = layers[i];
+                    url = "/" + name+ "/{z}/{x}/{y}";
+                    layer  = new L.TileLayer(url, {tms: true});
+                    baseMaps[name] = layer;
+                    if (i==0) {
+                        layer.addTo(map);
+                    }
+                 }
+                 L.control.layers(baseMaps, {}, {collapsed: false}).addTo(map);
+                 map.setView([55, 36], 9);
+                 var hash = new L.Hash(map);
+            }
+
+            window.onload = setUpMap;
+        </script>
+    </header>
+    <body style="margin: 0">
+        <div id="map"></div>
+
+    </body>
+</html>
+`
 )
 
 type Layer struct {
@@ -118,6 +160,7 @@ func updateLayers() {
 }
 
 func tileResponse(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Add("Access-Control-Allow-Origin", "*")
 	url := req.URL.Path
 	urlFields := strings.Split(url, "/")
 	if len(urlFields) != 5 {
@@ -163,7 +206,7 @@ func tileResponse(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if data == nil {
-		fmt.Println("Tile not found")
+		//fmt.Println("Tile not found")
 		http.NotFound(resp, req)
 		return
 	} else {
@@ -172,20 +215,28 @@ func tileResponse(resp http.ResponseWriter, req *http.Request) {
 	}
 }
 
-const (
-	FileNew     = 0
-	FileChanged = 1
-	FileDeleted = 2
-)
+func viewer(resp http.ResponseWriter, req *http.Request) {
+	layersNames := make([]string, len(layers))
+	i := 0
+	for name := range layers {
+		layersNames[i] = "\"" + name + "\""
+		i++
+	}
+	fmt.Fprintf(resp, html, strings.Join(layersNames, ","))
+}
 
-type FileEvent struct {
-	path      string
-	operation int
+func route(resp http.ResponseWriter, req *http.Request) {
+	if req.URL.Path == "/" {
+		viewer(resp, req)
+	} else {
+		tileResponse(resp, req)
+	}
+
 }
 
 func main() {
 	go updateLayers()
-	http.HandleFunc("/", tileResponse)
+	http.HandleFunc("/", route)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 
 }
