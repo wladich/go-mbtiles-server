@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"flag"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"log"
@@ -235,8 +236,11 @@ func route(resp http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
+	port := flag.Int("port", 8080, "port to listen")
+	host := flag.String("host", "127.0.0.1", "address to bind to")
+	flag.Parse()
 	go updateLayers()
 	http.HandleFunc("/", route)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf("%s:%d", *host, *port), nil))
 
 }
