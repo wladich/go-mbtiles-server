@@ -77,6 +77,8 @@ func newLayer(filename string) (layer *Layer, err error) {
 		layer.conn = nil
 		return
 	}
+	layer.conn.SetMaxOpenConns(20)
+	layer.conn.SetMaxIdleConns(3)
 	layer.tileStmt, err = layer.conn.Prepare("SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?")
 	if err != nil {
 		layer.conn.Close()
@@ -108,7 +110,6 @@ func (layer *Layer) tile(x, y, z int) ([]byte, error) {
 		err = rows.Err()
 		return nil, err
 	}
-
 }
 
 var layers = make(map[string]*Layer)
