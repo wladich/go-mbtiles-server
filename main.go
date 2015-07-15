@@ -68,25 +68,26 @@ type Layer struct {
 	activeRequests sync.WaitGroup
 	mtime          time.Time
 	size           int64
+	valid          bool
 }
 
 func newLayer(filename string) (layer *Layer, err error) {
 	layer = new(Layer)
 	layer.conn, err = sql.Open("sqlite3", filename)
 	if err != nil {
-		layer.conn = nil
+		layer.valid = false
 		return
 	}
-	layer.conn.SetMaxOpenConns(20)
-	layer.conn.SetMaxIdleConns(3)
+	layer.conn.SetMaxOpenConns(5)
+	layer.conn.SetMaxIdleConns(5)
 	layer.tileStmt, err = layer.conn.Prepare("SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?")
 	if err != nil {
 		layer.conn.Close()
-		layer.conn = nil
-		layer.tileStmt = nil
+		layer.valid = false
 		return
 	}
 	layer.activeRequests.Add(1)
+	layer.valid = true
 	go func() {
 		layer.activeRequests.Wait()
 		layer.tileStmt.Close()
@@ -137,7 +138,7 @@ func updateLayers() {
 					log.Printf("Error opening mbtiles file \"%s\": %s", path, err)
 				}
 				layers[name] = layer
-				if layerExists && oldLayer != nil {
+				if layerExists && oldLayer.valid {
 					startingRequests.Lock()
 					oldLayer.activeRequests.Add(-1)
 					startingRequests.Unlock()
@@ -148,7 +149,7 @@ func updateLayers() {
 			}
 		}
 		for name, layer := range layers {
-			if _, ok := seenLayers[name]; !ok {
+			if _, ok := seenLayers[name]; !ok && layer.valid {
 				startingRequests.Lock()
 				delete(layers, name)
 				layer.activeRequests.Add(-1)
