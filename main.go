@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	dataDir = "/home/w/projects/mbtiles_layers/local_display"
-	html    = `
+	html = `
 <!DOCTYPE html>
 <html>
     <header>
@@ -116,9 +115,9 @@ func (layer *Layer) tile(x, y, z int) ([]byte, error) {
 var layers = make(map[string]*Layer)
 var startingRequests sync.RWMutex
 
-func updateLayers() {
+func updateLayers(dataDir *string) {
 	for {
-		files, _ := filepath.Glob(filepath.Join(dataDir, "*.mbtiles"))
+		files, _ := filepath.Glob(filepath.Join(*dataDir, "*.mbtiles"))
 		seenLayers := make(map[string]bool)
 		for _, path := range files {
 			fi, err := os.Stat(path)
@@ -240,8 +239,9 @@ func route(resp http.ResponseWriter, req *http.Request) {
 func main() {
 	port := flag.Int("port", 8080, "port to listen")
 	host := flag.String("host", "127.0.0.1", "address to bind to")
+	dataDir := flag.String("path", ".", "where to look for *.mbtiles files")
 	flag.Parse()
-	go updateLayers()
+	go updateLayers(dataDir)
 	http.HandleFunc("/", route)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf("%s:%d", *host, *port), nil))
 
