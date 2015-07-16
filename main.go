@@ -139,7 +139,7 @@ func updateLayers(dataDir *string) {
 				layers[name] = layer
 				if layerExists && oldLayer.valid {
 					startingRequests.Lock()
-					oldLayer.activeRequests.Add(-1)
+					oldLayer.activeRequests.Done()
 					startingRequests.Unlock()
 					log.Printf("Updated file \"%s\" as \"%s\"", path, name)
 				} else {
@@ -151,7 +151,7 @@ func updateLayers(dataDir *string) {
 			if _, ok := seenLayers[name]; !ok && layer.valid {
 				startingRequests.Lock()
 				delete(layers, name)
-				layer.activeRequests.Add(-1)
+				layer.activeRequests.Done()
 				startingRequests.Unlock()
 				log.Printf("Layer \"%s\" removed", name)
 			}
@@ -178,7 +178,7 @@ func tileResponse(resp http.ResponseWriter, req *http.Request) {
 	} else {
 		layer.activeRequests.Add(1)
 		defer func() {
-			layer.activeRequests.Add(-1)
+			layer.activeRequests.Done()
 		}()
 		startingRequests.RUnlock()
 	}
